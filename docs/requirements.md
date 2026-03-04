@@ -2,8 +2,16 @@
 
 ## 概要
 
-JIRA のデータをローカルに同期・蓄積し、高速な検索・分析・SQLクエリを可能にするCLIツール。
+JIRA のデータをローカルに同期・蓄積し、高速な検索・分析・SQLクエリを可能にするツール。
 既存の Rust + Angular 実装 (jd) のバックエンドロジックを Go で再実装する。
+
+### 提供形態（ロードマップ）
+
+| フェーズ | 提供形態 | 説明 |
+|---|---|---|
+| **v1 (現在)** | CLI | コマンドラインツールとして提供 |
+| **v2 (将来)** | REST API サーバー | HTTP API として core 機能を公開 |
+| **v3 (将来)** | Web アプリ | Svelte フロントエンド + REST API バックエンド |
 
 ## 機能要件
 
@@ -77,6 +85,37 @@ JIRA のデータをローカルに同期・蓄積し、高速な検索・分析
   - コンポーネント一覧
   - バージョン一覧
 
+### 6. REST API サーバー（v2）
+
+RPC スタイルの HTTP API として core 機能を公開する。
+
+- 全操作は POST メソッド（リクエストボディでパラメータ渡し）
+- エンドポイント体系: `/api/{domain}.{action}`
+  - `/api/config.get`, `/api/config.update`, `/api/config.initialize`
+  - `/api/projects.list`, `/api/projects.initialize`, `/api/projects.enable`, `/api/projects.disable`
+  - `/api/sync.execute`, `/api/sync.status`
+  - `/api/issues.search`, `/api/issues.get`, `/api/issues.history`
+  - `/api/metadata.get`
+  - `/api/sql.execute`, `/api/sql.get-schema`, `/api/sql.list-queries`, `/api/sql.save-query`, `/api/sql.delete-query`
+- 同期進捗のリアルタイム通知（WebSocket または SSE）
+- CORS 設定（フロントエンド開発用）
+- JSON リクエスト/レスポンス
+
+### 7. Web フロントエンド（v3）
+
+Svelte によるWebアプリケーション。
+
+- **フレームワーク:** SvelteKit
+- **ページ構成:**
+  - ダッシュボード — 同期状態・プロジェクト概要
+  - プロジェクト管理 — プロジェクト一覧・有効/無効切り替え
+  - 同期 — 同期実行・リアルタイム進捗表示
+  - 課題検索 — フィルタ付き検索・複数ビュー（リスト/ボード/カレンダー）
+  - SQLクエリ — マルチタブエディタ・スキーマブラウザ
+  - 可視化 — チャート生成（バーンダウン、ベロシティ、CFD等）
+  - 設定 — JIRA接続・DB・ログ設定の管理
+- **REST API バックエンドと通信**
+
 ## 非機能要件
 
 ### パフォーマンス
@@ -91,9 +130,10 @@ JIRA のデータをローカルに同期・蓄積し、高速な検索・分析
 - エラー時のロールバック
 
 ### 拡張性
-- core パッケージとCLIの分離（ライブラリとして他プロジェクトから利用可能）
+- core パッケージとCLI/API/Webの分離（ライブラリとして他プロジェクトから利用可能）
 - リポジトリパターンによるストレージ層の抽象化（インターフェース定義）
 - JIRAクライアントの抽象化（テスト容易性）
+- core → CLI / REST API / Web フロントエンドの3つの提供形態を同一コアで実現
 
 ### ユーザビリティ
 - CLI での進捗表示（フェーズ、件数、パーセンテージ）
