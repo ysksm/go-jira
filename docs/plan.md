@@ -150,6 +150,58 @@ web ──→ api (HTTP)
 - `cli` と `api` は `service` のみに依存（同じインターフェース）
 - `web` (Svelte) は `api` の HTTP エンドポイントに依存
 
+## メモリ効率設計
+
+### 基本方針: ディスクファースト
+
+データは可能な限りメモリに保持せず、DBをバッファとして使う。
+
+```
+JIRA API → [バッチ(100件)] → DB書込 → メモリ解放
+                                ↓
+DB読出(1件/ページ単位) → 処理 → DB書戻 → メモリ解放
+```
+
+### 処理パターン別のメモリ使用方針
+
+| 処理 | 方式 | 理由 |
+|---|---|---|
+| 課題取得 | バッチ取得→即DB保存→解放 | 数千〜数万件になりうる |
+| スナップショット生成 | 1課題ずつDB読出→処理→DB書戻 | 課題×変更履歴の組合せが大きい |
+| ソフトデリート判定 | DB内サブクエリ (`NOT IN`) | 全キーをメモリに持たない |
+| ラベル抽出 | DB集約 (`SELECT DISTINCT`) | issues テーブルから直接取得 |
+| 整合性検証 | DB集約 (`COUNT`, `GROUP BY`) | 件数のみ必要 |
+| メタデータ同期 | インメモリ一括 | 件数が少ない（数十件） |
+| 設定ファイル | インメモリ | サイズが小さい（数KB） |
+| 検索結果 | ページネーション | 必要分だけ取得 |
+
+### リポジトリインターフェースへの反映
+
+```go
+// カーソルベースの読出（メモリ効率重視）
+type IssueRepository interface {
+    // バッチ書込（取得したらすぐ書く）
+    BatchInsert(ctx context.Context, issues []Issue) error
+
+    // カーソルで1件ずつ読出（スナップショット生成用）
+    FindByProjectCursor(ctx context.Context, projectID string) (IssueCursor, error)
+
+    // DB内で完結するソフトデリート（メモリにキーを持たない）
+    MarkDeletedNotInCurrentSync(ctx context.Context, projectID string, syncedAt time.Time) error
+
+    // ページネーション（検索結果用）
+    FindByProjectPaginated(ctx context.Context, projectID string, offset, limit int) ([]Issue, int, error)
+}
+
+// カーソルインターフェース
+type IssueCursor interface {
+    Next() bool        // 次の1件を読込
+    Issue() *Issue     // 現在の課題を取得
+    Err() error        // エラー確認
+    Close() error      // カーソルを閉じる
+}
+```
+
 ## 同期シーケンス（詳細）
 
 ### ユーザー視点
@@ -190,6 +242,8 @@ SyncService.Execute(ctx, options)
 ├─ 2. For each enabled project:
 │   │
 │   ├─ 2.1 Phase: FetchIssues
+│   │   │   ★ メモリ方針: バッチ(100件)単位で取得→即DB保存→メモリ解放
+│   │   │   ★ 全件をメモリに溜めない（ストリーミング処理）
 │   │   │
 │   │   ├─ Determine sync mode:
 │   │   │   ├─ checkpoint exists? → Resume from checkpoint
@@ -201,9 +255,11 @@ SyncService.Execute(ctx, options)
 │   │   │   │   params: jql, maxResults=100, nextPageToken, fields, expand=changelog
 │   │   │   │
 │   │   │   ├─ Parse response → []Issue + extract []ChangeHistoryItem from changelog
+│   │   │   │   (このバッチ分のみメモリに保持)
 │   │   │   │
-│   │   │   ├─ issueRepo.BatchInsert(issues)        // UPSERT
-│   │   │   ├─ changeHistoryRepo.BatchInsert(items)  // INSERT
+│   │   │   ├─ issueRepo.BatchInsert(issues)        // UPSERT → DBへ即書込
+│   │   │   ├─ changeHistoryRepo.BatchInsert(items)  // INSERT → DBへ即書込
+│   │   │   │   (書込後、このバッチのスライスは GC 対象)
 │   │   │   │
 │   │   │   ├─ Save checkpoint → settings.json
 │   │   │   │   { lastIssueUpdatedAt, lastIssueKey, itemsProcessed }
@@ -212,9 +268,13 @@ SyncService.Execute(ctx, options)
 │   │   │   │
 │   │   │   └─ if nextPageToken == "" → break
 │   │   │
-│   │   └─ If full sync: issueRepo.MarkDeletedNotInKeys(projectID, allKeys)
+│   │   └─ If full sync:
+│   │       issueRepo.MarkDeletedNotInKeys(projectID)
+│   │       ★ DB内で完結（SELECT synced keys → UPDATE WHERE key NOT IN subquery）
+│   │       ★ 全キーをメモリに持たない
 │   │
 │   ├─ 2.2 Phase: SyncMetadata
+│   │   │   ★ メタデータは件数が少ない（数十件）のでインメモリ処理OK
 │   │   │
 │   │   ├─ Fetch from JIRA API (6 parallel requests):
 │   │   │   ├─ GET /project/{key}/statuses
@@ -222,16 +282,20 @@ SyncService.Execute(ctx, options)
 │   │   │   ├─ GET /issuetype/project?projectId={id}
 │   │   │   ├─ GET /project/{key}/components
 │   │   │   ├─ GET /project/{key}/versions
-│   │   │   └─ Extract labels from issues
+│   │   │   └─ Extract labels from issues (DB query: SELECT DISTINCT)
 │   │   │
 │   │   └─ metadataRepo.Upsert*(projectID, data)
 │   │
 │   ├─ 2.3 Phase: GenerateSnapshots
+│   │   │   ★ メモリ方針: 1課題ずつDBから読出→処理→DB書戻→メモリ解放
 │   │   │
 │   │   ├─ snapshotRepo.BeginTransaction()
 │   │   │
-│   │   ├─ For each issue (batches of 100):
-│   │   │   ├─ Fetch change history for issue
+│   │   ├─ issueRepo.FindByProjectCursor(projectID) でカーソル取得
+│   │   │
+│   │   ├─ For each issue (1件ずつカーソルから読出):
+│   │   │   ├─ changeHistoryRepo.FindByIssueKey(key)
+│   │   │   │   (1課題分の変更履歴のみメモリ保持)
 │   │   │   │
 │   │   │   ├─ Build initial state (version=1):
 │   │   │   │   └─ Current state - reverse all changes → initial state
@@ -239,17 +303,20 @@ SyncService.Execute(ctx, options)
 │   │   │   ├─ Build subsequent versions (version=2,3,...):
 │   │   │   │   └─ Apply each change group forward
 │   │   │   │
-│   │   │   ├─ Delete old snapshots → Insert new snapshots
+│   │   │   ├─ snapshotRepo.DeleteByIssueID → Insert snapshots
+│   │   │   │   (生成したスナップショットを即DB書込)
 │   │   │   │
-│   │   │   └─ Save snapshot checkpoint
+│   │   │   └─ Save snapshot checkpoint (every 100 issues)
+│   │   │       (処理済み課題のデータはメモリから解放)
 │   │   │
 │   │   └─ snapshotRepo.CommitTransaction()
 │   │       (or RollbackTransaction() on error)
 │   │
 │   └─ 2.4 Phase: VerifyIntegrity
+│       │   ★ 件数比較はDB集約クエリのみ（COUNT, GROUP BY）
 │       │
 │       ├─ Get JIRA total count via JQL
-│       ├─ Get local count by status
+│       ├─ Get local count by status (DB: SELECT status, COUNT(*) GROUP BY status)
 │       └─ Log discrepancies (if any)
 │
 └─ 3. Return SyncResult[]

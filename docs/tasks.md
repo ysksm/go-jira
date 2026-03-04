@@ -21,7 +21,8 @@
 ## Phase 2: リポジトリインターフェース
 
 - [ ] **T-020** `core/domain/repository/issue_repo.go` — IssueRepository インターフェース
-  - BatchInsert, FindByProject, CountByProject, FindByProjectPaginated, MarkDeletedNotInKeys, CountByStatus
+  - BatchInsert, FindByProjectCursor, CountByProject, FindByProjectPaginated, MarkDeletedNotInCurrentSync, CountByStatus
+  - IssueCursor インターフェース（Next, Issue, Err, Close）— メモリ効率のためのカーソル読出
 - [ ] **T-021** `core/domain/repository/change_history_repo.go` — ChangeHistoryRepository インターフェース
   - BatchInsert, DeleteByIssueID, FindByIssueKey
 - [ ] **T-022** `core/domain/repository/snapshot_repo.go` — SnapshotRepository インターフェース
@@ -64,9 +65,9 @@
   - sync_history, jira_fields テーブル
   - インデックス作成
 - [ ] **T-042** `core/infrastructure/database/issue_repository.go` — IssueRepository 実装
-  - BatchInsert: ON CONFLICT DO UPDATE (UPSERT)
-  - FindByProject: WHERE project_id = ? AND is_deleted = false
-  - MarkDeletedNotInKeys: UPDATE SET is_deleted = true WHERE key NOT IN (...)
+  - BatchInsert: ON CONFLICT DO UPDATE (UPSERT) → 即DB書込でメモリ解放
+  - FindByProjectCursor: カーソルベース読出（1件ずつ、メモリ効率重視）
+  - MarkDeletedNotInCurrentSync: DB内サブクエリで完結（全キーをメモリに持たない）
 - [ ] **T-043** `core/infrastructure/database/change_history_repository.go` — ChangeHistoryRepository 実装
 - [ ] **T-044** `core/infrastructure/database/snapshot_repository.go` — SnapshotRepository 実装
   - トランザクション管理（BEGIN/COMMIT/ROLLBACK）
