@@ -140,36 +140,96 @@
 
 ---
 
-## 実装順序の推奨
+# v2: REST API サーバー
+
+## Phase 10: API 基盤
+
+- [x] **T-100** `cmd/go-jira-server/main.go` — サーバーエントリーポイント
+  - ポート指定（--port, デフォルト 8080）
+  - Graceful shutdown（SIGINT/SIGTERM）
+- [x] **T-101** `internal/api/server.go` — HTTP サーバー設定・起動
+- [x] **T-102** `internal/api/router.go` — ルーティング定義
+  - 全エンドポイントを `POST /api/{domain}.{action}` で登録
+- [x] **T-103** `internal/api/middleware.go` — ミドルウェア
+  - CORS（開発時用、Originの許可設定）
+  - リクエストログ（slog）
+  - JSON Content-Type 強制
+  - エラーリカバリ（panic → 500）
+- [x] **T-104** `internal/api/types.go` — API リクエスト/レスポンス型
+  - domain models をそのまま利用 + API 固有のラッパー型
+- [x] **T-105** `internal/api/helpers.go` — 共通ヘルパー
+  - `decodeRequest`, `writeJSON`, `writeError`
+
+## Phase 11: API ハンドラー
+
+- [x] **T-110** `internal/api/config_handler.go` — 設定 API
+  - POST /api/config.get → ConfigGetResponse
+  - POST /api/config.update → ConfigUpdateResponse
+  - POST /api/config.initialize → ConfigInitResponse
+- [x] **T-111** `internal/api/project_handler.go` — プロジェクト API
+  - POST /api/projects.list → ProjectListResponse
+  - POST /api/projects.initialize → ProjectInitResponse
+  - POST /api/projects.enable → ProjectEnableResponse
+  - POST /api/projects.disable → ProjectDisableResponse
+- [x] **T-112** `internal/api/sync_handler.go` — 同期 API
+  - POST /api/sync.execute → SyncExecuteResponse
+  - POST /api/sync.status → SyncStatusResponse
+  - GET  /api/sync.progress → SSE（Server-Sent Events）
+- [x] **T-113** `internal/api/issue_handler.go` — 課題 API
+  - POST /api/issues.search → IssueSearchResponse
+  - POST /api/issues.get → IssueGetResponse
+  - POST /api/issues.history → IssueHistoryResponse
+- [x] **T-114** `internal/api/metadata_handler.go` — メタデータ API
+  - POST /api/metadata.get → MetadataGetResponse
+- [x] **T-115** `internal/api/query_handler.go` — SQL クエリ API
+  - POST /api/sql.execute → SqlExecuteResponse
+  - POST /api/sql.get-schema → SqlGetSchemaResponse
+
+## Phase 12: API テスト
+
+- [ ] **T-120** ハンドラーテスト（httptest + サービスモック）
+- [ ] **T-121** SSE 進捗通知テスト
+- [ ] **T-122** CORS・ミドルウェアテスト
+
+---
+
+# v3: Svelte フロントエンド
+
+## Phase 13: Svelte プロジェクト基盤
+
+- [ ] **T-130** SvelteKit プロジェクト初期化（`web/`）
+  - Svelte 5, TypeScript, Tailwind CSS
+- [ ] **T-131** Vite プロキシ設定（`/api` → Go サーバー）
+- [ ] **T-132** `web/src/lib/api.ts` — API クライアント
+  - 全エンドポイント対応（POST + SSE）
+- [ ] **T-133** `web/src/lib/types.ts` — 型定義（Go models に対応）
+- [ ] **T-134** `web/src/lib/stores/` — Svelte stores
+  - projects, syncProgress, settings
+
+## Phase 14: Svelte ページ実装
+
+- [ ] **T-140** 共通レイアウト + ナビゲーション
+- [ ] **T-141** ダッシュボード（同期状態、プロジェクト概要）
+- [ ] **T-142** プロジェクト管理ページ（一覧、有効/無効切替）
+- [ ] **T-143** 同期ページ（実行ボタン、SSE リアルタイム進捗表示）
+- [ ] **T-144** 課題検索ページ（フィルタ、リスト/ボード切替）
+- [ ] **T-145** SQL クエリページ（エディタ、スキーマブラウザ、結果テーブル）
+- [ ] **T-146** 設定ページ（JIRA接続、DB、同期設定）
+
+## Phase 15: ビルド統合
+
+- [ ] **T-150** Go サーバーに Svelte ビルド成果物を埋め込み（`embed`）
+- [ ] **T-151** 本番ビルドスクリプト（Makefile）
+- [ ] **T-152** README 更新（v2/v3 の使い方追加）
+
+---
+
+## 実装順序
 
 ```
-Phase 0 (基盤)
+v1 (完了)
     ↓
-Phase 1 (モデル) → Phase 2 (インターフェース)
+Phase 10-11 (REST API) → Phase 12 (API テスト)
     ↓
-Phase 3 (JIRA) + Phase 4 (DB) + Phase 5 (設定)  ← 並行可能
-    ↓
-Phase 6 (サービス)  ← Phase 3-5 完了後
-    ↓
-Phase 7 (CLI)  ← Phase 6 完了後
-    ↓
-Phase 8 (テスト) + Phase 9 (仕上げ)  ← 並行可能
+Phase 13-14 (Svelte) → Phase 15 (ビルド統合)
 ```
-
-## 注意事項
-
-### 同期処理の実装ポイント
-1. **チェックポイント保存はバッチ完了ごとに行う** — 中断からの再開を確実にする
-2. **インクリメンタル同期のマージン** — JQLの分精度に対応するため、前回日時から5分引く
-3. **トークンベースページネーション** — offset ではなく `nextPageToken` を使う
-4. **changelog は raw JSON から抽出** — API レスポンスの `changelog.histories[].items[]` を解析
-5. **スナップショットの初期状態復元** — 全変更を逆順に適用して初期状態を得る
-
-### スナップショット生成のフィールドタイプ
-| タイプ | 該当フィールド | 処理方法 |
-|---|---|---|
-| DirectString | summary, description | そのまま from/to を適用 |
-| ObjectWithName | status, priority, issuetype, resolution, sprint | `name` フィールドで比較・適用 |
-| ObjectWithDisplayName | assignee, reporter | `displayName` で比較・適用 |
-| ArrayOfStrings | labels | カンマ区切り文字列として処理 |
-| ArrayOfObjectsWithName | components, fixVersions | オブジェクト配列から `name` 抽出 |

@@ -7,6 +7,8 @@
 *.dll
 *.so
 *.dylib
+/go-jira
+/go-jira-server
 
 # Test binary, built with `go test -c`
 *.test
