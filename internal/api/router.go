@@ -51,5 +51,10 @@ func NewRouter(cfg ServerConfig) http.Handler {
 	mux.HandleFunc("POST /api/sql.execute", queryH.Execute)
 	mux.HandleFunc("POST /api/sql.get-schema", queryH.GetSchema)
 
+	// --- Static files (embedded Svelte build) ---
+	if hasEmbeddedWeb() {
+		mux.Handle("/", staticHandler())
+	}
+
 	return mux
 }
